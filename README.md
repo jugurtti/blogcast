@@ -50,7 +50,7 @@ the host to run BlogCast.
 ## Quick Start
 
 ```bash
-git clone https://github.com/your-user/blogcast.git
+git clone https://github.com/jugurtti/blogcast.git
 cd blogcast
 cp .env.example .env
 ```
@@ -95,10 +95,10 @@ template with inline comments.
 | `BLOGCAST_FEED_AUTHOR` | No | `BlogCast User` | Podcast feed author. |
 | `BLOGCAST_FEED_DESCRIPTION` | No | `Turning blog posts into podcast episodes` | Podcast feed description. |
 | `PORT` | No | `8000` | HTTP server port inside the container. |
-| `UPDATE_INTERVAL` | **Yes** | 3600 | Seconds between automatic update runs. Must be set — see [Troubleshooting](#troubleshooting). |
+| `UPDATE_INTERVAL` | No | `3600` | Seconds between automatic update runs. |
 | `TZ` | No | system default | Container timezone, e.g. `Europe/Helsinki`. |
 
-### Content Sources
+### Content Source Variables
 
 | Variable | Required | Description |
 |---|---|---|
@@ -208,15 +208,44 @@ BLOGCAST_DATE_FORMAT_DE={day}. {month} {year}
   docker compose exec blogcast python blogcast.py add https://example.com/blog --voice de=de-DE-KatjaNeural
   ```
 
+## Optional Assets
+
+BlogCast works with zero assets — episodes render as plain speech, and the
+feed uses each source's own image. Three optional files let you customize
+the result further. None are included in this repository; add your own if
+you want them.
+
+Place these in `blogcast_data/assets/`:
+
+| File | Purpose | If missing |
+|---|---|---|
+| `podcast_logo.png` | Feed-wide channel artwork, shown in podcast apps. | The first source's own image is used instead. |
+| `pdf_icon.png` | Generic artwork for PDF episodes, which have no per-source logo of their own. | PDF episodes simply have no episode image. |
+| `chime.mp3` | A short sound appended after the spoken text in every episode. | Episodes render as speech only, with no chime. |
+
+### Recommendations
+
+- **`podcast_logo.png`** — square, usually 1400×1400px (standard podcast
+  artwork requirements for most apps and directories).
+- **`pdf_icon.png`** — same square format; a simple generic document/PDF
+  icon works well since it's shared across every PDF episode.
+- **`chime.mp3`** — short (2–4 seconds), consistent volume level with your
+  spoken audio. A brief tone or jingle works better than music with lyrics.
+
+### Applying changes
+
+Drop the file(s) into `blogcast_data/assets/` on the host, then restart via Synology Container Manager → Project → Action → Restart or:
+
+```bash
+docker compose restart
+```
+
 ## Content Sources
 
 ### Blogs
 
 ```env
-BLOGCAST_BLOG_URLS="
-https://first-blog.example
-https://second-blog.example
-"
+BLOGCAST_BLOG_URLS=https://first-blog.example,https://second-blog.example
 ```
 
 WordPress sites are detected automatically and use the REST API (full text,
@@ -234,7 +263,7 @@ PDF support is optional and disabled by default. To enable it:
    ```env
    BLOGCAST_PDF_PATH=/volume1/Blogcast
    ```
-3. Restart: `docker compose up -d`
+3. Restart: `docker compose up -d` or via Synology Container Manager → Project → Action → Restart
 
 Behaviour worth knowing:
 
@@ -319,6 +348,11 @@ sudo docker logs blogcast
 **`⚠️  Language 'xx' has no usable voice; ignoring it.`**
 Set `BLOGCAST_VOICE_XX` to a valid edge-tts voice ID for that language.
 
+**`SystemExit: No usable language configured.`**
+Every language in `BLOGCAST_LANGUAGES` is missing a usable voice. Set at
+least one `BLOGCAST_VOICE_<LANG>` to a valid edge-tts voice ID, or remove
+that language from `BLOGCAST_LANGUAGES`.
+
 **`ℹ️  No date formatting data for 'xx'; dates will be spoken as numbers.`**
 Informational, not an error — Babel doesn't recognise that language code.
 Dates will read as `29.6.2026` instead of a spoken form. Set
@@ -340,4 +374,4 @@ Microsoft Edge's public TTS service.
 
 ## License
 
-MIT (see `LICENSE`).
+This project is licensed under the [LICENSE](LICENSE).
