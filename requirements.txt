@@ -1,0 +1,8 @@
+babel==2.12.1
+beautifulsoup4==4.13.5
+edge-tts==7.2.3
+langdetect==1.0.9
+mutagen==1.47.0
+pydub==0.25.1
+pypdf==6.1.0
+requests==2.32.5

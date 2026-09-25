@@ -1,0 +1,30 @@
+services:
+  blogcast:
+    image: blogcast:latest
+    container_name: blogcast
+    restart: unless-stopped
+
+    # Use host networking so the built-in HTTP server is reachable
+    # directly without Docker port mappings.
+    network_mode: host
+
+    # All configuration lives in .env. env_file is used instead of listing
+    # each variable individually, because language-specific keys such as
+    # BLOGCAST_VOICE_<LANG>, BLOGCAST_MONTHS_<LANG>, BLOGCAST_DATE_FORMAT_<LANG>
+    # and BLOGCAST_INTRO_<LANG>/BLOGCAST_OUTRO_<LANG> depend on which languages
+    # you configure and cannot be enumerated here.
+    env_file:
+      - .env
+
+    volumes:
+      # Application files, mounted read-only for easy updates.
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - ./blogcast.py:/app/blogcast.py:ro
+
+      # Persistent BlogCast data: generated audio, feed state,
+      # podcast.xml and assets.
+      - ./blogcast_data:/app/blogcast_data
+
+      # Optional: enable PDF processing by uncommenting this line and
+      # setting BLOGCAST_PDF_PATH in .env to an existing folder.
+      # - "${BLOGCAST_PDF_PATH}:/external-pdf-drop:ro"

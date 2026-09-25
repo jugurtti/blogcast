@@ -1,0 +1,15 @@
+# Build artifacts
+*.tar
+__pycache__/
+*.pyc
+
+# OS junk files
+.DS_Store
+Thumbs.db
+
+# Environment-specific files
+.env
+.vscode/
+
+# Generated data and audio
+blogcast_data/

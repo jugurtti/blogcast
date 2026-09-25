@@ -1,0 +1,16 @@
+# Default: normalize text files
+* text=auto
+
+# Linux/container files must remain LF
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Python files can safely use LF everywhere
+*.py text eol=lf
+
+# Windows scripts use CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
