@@ -219,7 +219,7 @@ Place these in `blogcast_data/assets/`:
 
 | File | Purpose | If missing |
 |---|---|---|
-| `podcast_logo.png` | Feed-wide channel artwork, shown in podcast apps. | The first source's own image is used instead. |
+| `podcast_logo.png` | Feed-wide channel artwork and fallback artwork for episodes without a usable source image. | The first source's own image is used for the channel; episodes without source artwork have no image. |
 | `pdf_icon.png` | Generic artwork for PDF episodes, which have no per-source logo of their own. | PDF episodes simply have no episode image. |
 | `chime.mp3` | A short sound appended after the spoken text in every episode. | Episodes render as speech only, with no chime. |
 

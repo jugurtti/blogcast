@@ -377,6 +377,13 @@ def _pdf_icon_url() -> str:
     return ""
 
 
+def _is_blank_image_url(image_url: str) -> bool:
+    """Recognize WordPress.com's blank-image placeholder as missing artwork."""
+    parsed = urlparse(image_url or "")
+    return (parsed.hostname == "s0.wp.com"
+            and parsed.path.rstrip("/") == "/i/blank.jpg")
+
+
 # --- Chime ------------------------------------------------------------------
 # The chime is optional: episodes are rendered without it when the asset is
 # not present in ASSET_DIR.
@@ -1125,7 +1132,8 @@ def build_podcast_feed(state: dict) -> str:
         channel_img = f"{PUBLIC_BASE_URL}{FEED_LOGO_URL_PATH}?v={_cache_bust(FEED_LOGO_FILE)}"
     else:
         channel_img = next((b.get("image_url") for b in state["blogs"].values()
-                            if b.get("image_url")), "")
+                            if b.get("image_url")
+                            and not _is_blank_image_url(b["image_url"])), "")
 
     items = []
     for blog, ep in episodes:
@@ -1138,8 +1146,10 @@ def build_podcast_feed(state: dict) -> str:
         lang = ep.get("lang", FALLBACK_LANG)
         ep_title = f"{blog_name} - {ep['title']}"
         img = blog.get("image_url", "")
-        if not img and blog.get("kind") == "pdf":
-            img = _pdf_icon_url()
+        if blog.get("kind") == "pdf":
+            img = _pdf_icon_url() or channel_img
+        elif not img or _is_blank_image_url(img):
+            img = channel_img
         img_tag = f'\n      <itunes:image href="{_xe(img)}"/>' if img else ""
 
         # Show notes: a clickable link to the original post. The same HTML is
