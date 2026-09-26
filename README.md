@@ -251,17 +251,28 @@ BLOGCAST_BLOG_URLS=https://first-blog.example,https://second-blog.example
 WordPress sites are detected automatically and use the REST API (full text,
 full history). Other sites fall back to RSS.
 
-When adding a blog manually, full history is imported by default. Use
-`--new-only` to skip existing posts and start with content published after the
-source is added:
+When adding a blog manually, full history is imported by default. `--new-only`
+starts with posts published after the source is added. `--rss-only` instead
+counts the items in the site's RSS feed and, for WordPress, fetches that many
+newest posts through REST so full post content is used:
 
 ```bash
 docker compose exec blogcast python blogcast.py add https://example.com/blog --new-only
+docker compose exec blogcast python blogcast.py add https://example.com/blog --rss-only
 ```
 
+On non-WordPress sites, `--rss-only` processes the RSS items directly.
+
 The selected mode is saved per source and shown by `python blogcast.py list`.
+To switch an existing source to RSS-sized REST updates and generate any missing
+episodes, target it by slug, name, or URL:
+
+```bash
+docker compose exec blogcast python blogcast.py update --rss-only <slug-or-url>
+```
+
 URLs registered through `BLOGCAST_BLOG_URLS` continue to use full-history
-backfill.
+backfill unless switched with the update command.
 
 ### PDF Source
 
@@ -293,16 +304,17 @@ Run these inside the container, e.g. `docker compose exec blogcast <command>`.
 
 | Command | Description |
 |---|---|
-| `python blogcast.py update` | Fetch new content from all sources. Runs automatically every `UPDATE_INTERVAL` seconds. |
+| `python blogcast.py update [--rss-only <blog>]` | Fetch new content from all sources. `--rss-only <blog>` switches that source to RSS-sized REST updates and fills missing episodes. Runs automatically every `UPDATE_INTERVAL` seconds. |
 | `python blogcast.py list` | Show configured sources, voices, and episode counts. |
 | `python blogcast.py voices` | List configured and built-in voices. |
 | `python blogcast.py add <url> [options]` | Add a blog manually, importing full history by default. |
 | `python blogcast.py remove <slug\|url\|name> [--purge]` | Unsubscribe. `--purge` also deletes existing episodes. |
 | `python blogcast.py serve --port 8000` | Start the HTTP server (already run automatically by `entrypoint.sh`). |
 
-`add` options: `--new-only` (skip existing posts), `--voice LANG=VOICE`
-(repeatable), `--no-intro`, `--no-outro`, `--no-chime`, `--force` (regenerate
-audio even if it already exists).
+`add` fetch options (mutually exclusive): `--new-only` or `--rss-only`.
+Other `add` options: `--voice LANG=VOICE` (repeatable), `--no-intro`,
+`--no-outro`, `--no-chime`, `--force` (regenerate audio even if it already
+exists).
 
 ## Building the Docker Image
 

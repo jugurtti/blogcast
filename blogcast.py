@@ -607,12 +607,19 @@ def discover_source(url: str) -> dict:
 # --- Backfill (WordPress REST API) ------------------------------------------
 
 def _fetch_wp_content_type(wp_api: str, content_type: str,
-                           after: str | None = None) -> list[dict]:
-    """Fetch every item of one WordPress content type, paging the whole archive."""
+                           after: str | None = None,
+                           limit: int | None = None) -> list[dict]:
+    """Fetch WordPress content, optionally bounded to the newest items."""
+    if limit is not None and limit <= 0:
+        return []
+
     posts, page = [], 1
     while True:
-        url = (f"{wp_api}/{content_type}?per_page=100&page={page}"
-               f"&orderby=date&order=asc&_fields=id,date_gmt,link,title,content,guid")
+        page_size = min(limit, 100) if limit is not None else 100
+        order = "desc" if limit is not None else "asc"
+        url = (f"{wp_api}/{content_type}?per_page={page_size}&page={page}"
+               f"&orderby=date&order={order}"
+               f"&_fields=id,date_gmt,link,title,content,guid")
         if after:
             url += f"&after={after}"
         try:
@@ -632,6 +639,8 @@ def _fetch_wp_content_type(wp_api: str, content_type: str,
                           p.get("title", {}).get("rendered", "")).strip()),
                 "html": p.get("content", {}).get("rendered", ""),
                 "date": p.get("date_gmt")})
+            if limit is not None and len(posts) >= limit:
+                return posts
         total_pages = int(headers.get("X-WP-TotalPages", page))
         if page >= total_pages:
             break
@@ -640,18 +649,19 @@ def _fetch_wp_content_type(wp_api: str, content_type: str,
     return posts
 
 
-def fetch_all_wp_posts(wp_api: str, after: str | None = None) -> list[dict]:
-    """Fetch all WordPress content, preferring posts and falling back to pages.
+def fetch_all_wp_posts(wp_api: str, after: str | None = None,
+                       limit: int | None = None) -> list[dict]:
+    """Fetch WordPress content, preferring posts and falling back to pages.
 
     Some sites build their entire content as pages, so an empty "posts"
     collection triggers a retry against "pages".
     """
-    posts = _fetch_wp_content_type(wp_api, "posts", after=after)
+    posts = _fetch_wp_content_type(wp_api, "posts", after=after, limit=limit)
     if posts:
         return posts
 
     print("    ℹ️  No posts found; trying WordPress pages instead...")
-    return _fetch_wp_content_type(wp_api, "pages", after=after)
+    return _fetch_wp_content_type(wp_api, "pages", after=after, limit=limit)
 
 
 # --- Incremental updates (RSS) ----------------------------------------------
@@ -1373,7 +1383,8 @@ def cmd_add(args):
     blog.update({"name": src["name"], "slug": slug,
                  "site_root": src["site_root"], "feed_url": src["feed_url"],
                  "wp_api": src["wp_api"], "image_url": src.get("image_url", ""),
-                 "fetch_mode": "new_only" if args.new_only else "all",
+                 "fetch_mode": ("new_only" if args.new_only else
+                                "rss_only" if args.rss_only else "all"),
                  "voices": _voice_overrides(args),
                  "intro": not args.no_intro,
                  "outro": not args.no_outro, "chime": not args.no_chime,
@@ -1385,18 +1396,26 @@ def cmd_add(args):
     else:
         blog.pop("added_after", None)
         blog.pop("new_only_baseline_guids", None)
+        if args.rss_only:
+            blog["backfill_pending"] = False
     print(f"   Image: {src.get('image_url') or '(not found)'}")
     blog.setdefault("seen_guids", [])
     blog.setdefault("episodes", [])
     state["blogs"][slug] = blog
 
     if src["wp_api"]:
-        if args.new_only:
+        if args.rss_only:
+            rss_items = fetch_rss_items(src["feed_url"])
+            print(f"⏬ RSS contains {len(rss_items)} items; fetching that many "
+                  "recent posts through the WordPress REST API...")
+            posts = fetch_all_wp_posts(src["wp_api"], limit=len(rss_items))
+        elif args.new_only:
             print("⏬ Fetching posts published after this source was added...")
+            posts = fetch_all_wp_posts(
+                src["wp_api"], after=blog.get("added_after"))
         else:
             print("⏬ Downloading all existing posts through the WordPress REST API...")
-        posts = fetch_all_wp_posts(
-            src["wp_api"], after=blog.get("added_after") if args.new_only else None)
+            posts = fetch_all_wp_posts(src["wp_api"])
     else:
         print("⏬ No REST API available; downloading the latest RSS items...")
         posts = fetch_rss_items(src["feed_url"])
@@ -1413,7 +1432,7 @@ def cmd_add(args):
     # If process_posts is interrupted (e.g. the container restarts mid-run) the
     # flag survives in the last saved state, and the next update resumes the
     # backfill automatically.
-    if src["wp_api"] and not args.new_only:
+    if src["wp_api"] and not args.new_only and not args.rss_only:
         blog["backfill_pending"] = True
         save_state(state)
 
@@ -1423,7 +1442,7 @@ def cmd_add(args):
                           on_progress=_feed_writer(state))
 
     # The whole list was processed without interruption: backfill is complete.
-    if src["wp_api"] and not args.new_only:
+    if src["wp_api"] and not args.new_only and not args.rss_only:
         blog["backfill_pending"] = False
 
     save_state(state)
@@ -1491,6 +1510,18 @@ def cmd_update(args):
 
     ensure_pdf_source_registered(state)
     _sync_configured_blog_urls(state)
+
+    if args.rss_only:
+        _slug, target = find_blog(state, args.rss_only)
+        if not target:
+            raise SystemExit(f"Blog not found: {args.rss_only}")
+        if target.get("kind") == "pdf":
+            raise SystemExit("--rss-only can only be used with a blog source.")
+        target["fetch_mode"] = "rss_only"
+        target.pop("added_after", None)
+        target.pop("new_only_baseline_guids", None)
+        target["backfill_pending"] = False
+        print(f"🔁 Switching {target['name']} to RSS-sized REST updates.")
     save_state(state)
 
     if not state["blogs"]:
@@ -1569,22 +1600,33 @@ def cmd_update(args):
             # rather than the full text, so content:encoded holds only the
             # first paragraph. The REST API's content.rendered always returns
             # the full text and is therefore the more reliable source.
+            rss_items = None
             if blog.get("backfill_pending", None) is not False:
                 if blog.get("fetch_mode") == "new_only":
                     print("   ⏳ Resuming new-only import after its cutoff...")
+                elif blog.get("fetch_mode") == "rss_only":
+                    print("   ⏳ Resuming RSS-sized REST import...")
                 else:
                     print("   ⏳ Backfill is incomplete or its status is unknown; "
                           "fetching the full archive to continue...")
             try:
-                after = (blog.get("added_after")
-                         if blog.get("fetch_mode") == "new_only" else None)
-                posts = fetch_all_wp_posts(blog["wp_api"], after=after)
-                did_full_wp_fetch = after is None
+                if blog.get("fetch_mode") == "rss_only":
+                    rss_items = fetch_rss_items(blog["feed_url"])
+                    print(f"   RSS contains {len(rss_items)} items; fetching "
+                          "that many recent posts through the REST API...")
+                    posts = fetch_all_wp_posts(blog["wp_api"],
+                                               limit=len(rss_items))
+                else:
+                    after = (blog.get("added_after")
+                             if blog.get("fetch_mode") == "new_only" else None)
+                    posts = fetch_all_wp_posts(blog["wp_api"], after=after)
+                    did_full_wp_fetch = after is None
             except Exception as e:
                 print(f"   ⚠️  REST request failed ({e}); "
                       f"trying the RSS feed as a fallback...")
                 try:
-                    posts = fetch_rss_items(blog["feed_url"])
+                    posts = (rss_items if rss_items is not None
+                             else fetch_rss_items(blog["feed_url"]))
                 except Exception as e2:
                     print(f"   ⚠️  RSS fallback also failed ({e2}); "
                           f"retrying during the next update.")
@@ -1640,8 +1682,10 @@ def cmd_list(args):
             print(f"    Folder: {Path(blog['folder'])}")
         else:
             print(f"    Feed: {blog['feed_url']}")
-            fetch_mode = ("new items only" if blog.get("fetch_mode") == "new_only"
-                          else "full history")
+            fetch_mode = {
+                "new_only": "new items after adding",
+                "rss_only": "latest RSS-count items",
+            }.get(blog.get("fetch_mode"), "full history")
             print(f"    Fetch: {fetch_mode}")
         voices = "  ".join(f"{lang}={v.get(lang, DEFAULT_VOICES[lang])}"
                            for lang in LANGUAGES)
@@ -1865,8 +1909,11 @@ def main():
 
     p = sub.add_parser("add", help="Add a blog (full history by default)")
     p.add_argument("url")
-    p.add_argument("--new-only", action="store_true",
-                   help="Skip existing posts and process items published after adding")
+    fetch_mode = p.add_mutually_exclusive_group()
+    fetch_mode.add_argument("--new-only", action="store_true",
+                            help="Skip existing posts; process items published after adding")
+    fetch_mode.add_argument("--rss-only", action="store_true",
+                            help="Fetch as many recent REST posts as the RSS feed contains")
     p.add_argument("--voice", action="append", metavar="LANG=VOICE", default=[],
                    help="Override the voice for one language, e.g. "
                         "--voice fi=Harri --voice de=de-DE-KatjaNeural "
@@ -1887,6 +1934,8 @@ def main():
     u = sub.add_parser("update", help="Fetch new posts and PDFs")
     u.add_argument("--force", action="store_true",
                    help="Regenerate audio even when the file already exists")
+    u.add_argument("--rss-only", metavar="BLOG",
+                   help="Switch BLOG to RSS-sized REST updates and generate missing episodes")
     u.set_defaults(func=cmd_update)
 
     sub.add_parser("list", help="List configured sources").set_defaults(func=cmd_list)
