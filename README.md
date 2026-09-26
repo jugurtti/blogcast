@@ -251,6 +251,18 @@ BLOGCAST_BLOG_URLS=https://first-blog.example,https://second-blog.example
 WordPress sites are detected automatically and use the REST API (full text,
 full history). Other sites fall back to RSS.
 
+When adding a blog manually, full history is imported by default. Use
+`--new-only` to skip existing posts and start with content published after the
+source is added:
+
+```bash
+docker compose exec blogcast python blogcast.py add https://example.com/blog --new-only
+```
+
+The selected mode is saved per source and shown by `python blogcast.py list`.
+URLs registered through `BLOGCAST_BLOG_URLS` continue to use full-history
+backfill.
+
 ### PDF Source
 
 PDF support is optional and disabled by default. To enable it:
@@ -284,12 +296,13 @@ Run these inside the container, e.g. `docker compose exec blogcast <command>`.
 | `python blogcast.py update` | Fetch new content from all sources. Runs automatically every `UPDATE_INTERVAL` seconds. |
 | `python blogcast.py list` | Show configured sources, voices, and episode counts. |
 | `python blogcast.py voices` | List configured and built-in voices. |
-| `python blogcast.py add <url> [options]` | Add a blog manually and download its full history. |
+| `python blogcast.py add <url> [options]` | Add a blog manually, importing full history by default. |
 | `python blogcast.py remove <slug\|url\|name> [--purge]` | Unsubscribe. `--purge` also deletes existing episodes. |
 | `python blogcast.py serve --port 8000` | Start the HTTP server (already run automatically by `entrypoint.sh`). |
 
-`add` options: `--voice LANG=VOICE` (repeatable), `--no-intro`, `--no-outro`,
-`--no-chime`, `--force` (regenerate audio even if it already exists).
+`add` options: `--new-only` (skip existing posts), `--voice LANG=VOICE`
+(repeatable), `--no-intro`, `--no-outro`, `--no-chime`, `--force` (regenerate
+audio even if it already exists).
 
 ## Building the Docker Image
 

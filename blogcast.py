@@ -606,12 +606,15 @@ def discover_source(url: str) -> dict:
 
 # --- Backfill (WordPress REST API) ------------------------------------------
 
-def _fetch_wp_content_type(wp_api: str, content_type: str) -> list[dict]:
+def _fetch_wp_content_type(wp_api: str, content_type: str,
+                           after: str | None = None) -> list[dict]:
     """Fetch every item of one WordPress content type, paging the whole archive."""
     posts, page = [], 1
     while True:
         url = (f"{wp_api}/{content_type}?per_page=100&page={page}"
                f"&orderby=date&order=asc&_fields=id,date_gmt,link,title,content,guid")
+        if after:
+            url += f"&after={after}"
         try:
             data, headers = _http_get(url, as_json=True)
         except Exception as e:
@@ -637,18 +640,18 @@ def _fetch_wp_content_type(wp_api: str, content_type: str) -> list[dict]:
     return posts
 
 
-def fetch_all_wp_posts(wp_api: str) -> list[dict]:
+def fetch_all_wp_posts(wp_api: str, after: str | None = None) -> list[dict]:
     """Fetch all WordPress content, preferring posts and falling back to pages.
 
     Some sites build their entire content as pages, so an empty "posts"
     collection triggers a retry against "pages".
     """
-    posts = _fetch_wp_content_type(wp_api, "posts")
+    posts = _fetch_wp_content_type(wp_api, "posts", after=after)
     if posts:
         return posts
 
     print("    ℹ️  No posts found; trying WordPress pages instead...")
-    return _fetch_wp_content_type(wp_api, "pages")
+    return _fetch_wp_content_type(wp_api, "pages", after=after)
 
 
 # --- Incremental updates (RSS) ----------------------------------------------
@@ -678,6 +681,43 @@ def _rfc822_to_iso(pub: str | None) -> str:
         return parsedate_to_datetime(pub).astimezone(timezone.utc).isoformat()
     except Exception:
         return datetime.now(timezone.utc).isoformat()
+
+
+def _new_only_cutoff() -> str:
+    """Return a UTC cutoff accepted by the WordPress REST API."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z")
+
+
+def _filter_new_only_posts(blog: dict, posts: list[dict]) -> list[dict]:
+    """Keep only items published after a source's new-only cutoff."""
+    cutoff_value = blog.get("added_after")
+    if not cutoff_value:
+        return posts
+    try:
+        cutoff = datetime.fromisoformat(cutoff_value.replace("Z", "+00:00"))
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+    except ValueError:
+        print(f"    ⚠️  Invalid new-only cutoff for {blog.get('name', 'source')}; "
+              "skipping this update.")
+        return []
+
+    baseline = set(blog.get("new_only_baseline_guids", []))
+    new_posts = []
+    for post in posts:
+        if post.get("guid") in baseline:
+            continue
+        try:
+            published = datetime.fromisoformat(
+                post.get("date", "").replace("Z", "+00:00"))
+            if published.tzinfo is None:
+                published = published.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        if published > cutoff:
+            new_posts.append(post)
+    return new_posts
 
 
 # --- PDF folder source ------------------------------------------------------
@@ -1333,28 +1373,47 @@ def cmd_add(args):
     blog.update({"name": src["name"], "slug": slug,
                  "site_root": src["site_root"], "feed_url": src["feed_url"],
                  "wp_api": src["wp_api"], "image_url": src.get("image_url", ""),
+                 "fetch_mode": "new_only" if args.new_only else "all",
                  "voices": _voice_overrides(args),
                  "intro": not args.no_intro,
                  "outro": not args.no_outro, "chime": not args.no_chime,
                  "active": True})
+    if args.new_only:
+        blog["added_after"] = _new_only_cutoff()
+        blog["new_only_baseline_guids"] = []
+        blog.pop("backfill_pending", None)
+    else:
+        blog.pop("added_after", None)
+        blog.pop("new_only_baseline_guids", None)
     print(f"   Image: {src.get('image_url') or '(not found)'}")
     blog.setdefault("seen_guids", [])
     blog.setdefault("episodes", [])
     state["blogs"][slug] = blog
 
     if src["wp_api"]:
-        print("⏬ Downloading all existing posts through the WordPress REST API...")
-        posts = fetch_all_wp_posts(src["wp_api"])
+        if args.new_only:
+            print("⏬ Fetching posts published after this source was added...")
+        else:
+            print("⏬ Downloading all existing posts through the WordPress REST API...")
+        posts = fetch_all_wp_posts(
+            src["wp_api"], after=blog.get("added_after") if args.new_only else None)
     else:
         print("⏬ No REST API available; downloading the latest RSS items...")
         posts = fetch_rss_items(src["feed_url"])
+        if args.new_only:
+            blog["new_only_baseline_guids"] = sorted(
+                {post["guid"] for post in posts if post.get("guid")})
+            blog["added_after"] = _new_only_cutoff()
+            posts = []
+            print("    ℹ️  Existing RSS items recorded as the starting point; "
+                  "they will not become episodes.")
     print(f"   Found {len(posts)} posts.")
 
     # backfill_pending marks that this list has not been processed to the end.
     # If process_posts is interrupted (e.g. the container restarts mid-run) the
     # flag survives in the last saved state, and the next update resumes the
     # backfill automatically.
-    if src["wp_api"]:
+    if src["wp_api"] and not args.new_only:
         blog["backfill_pending"] = True
         save_state(state)
 
@@ -1364,7 +1423,7 @@ def cmd_add(args):
                           on_progress=_feed_writer(state))
 
     # The whole list was processed without interruption: backfill is complete.
-    if src["wp_api"]:
+    if src["wp_api"] and not args.new_only:
         blog["backfill_pending"] = False
 
     save_state(state)
@@ -1393,6 +1452,7 @@ def _register_blog_from_url(state: dict, url: str):
     blog.update({"name": src["name"], "slug": slug,
                  "site_root": src["site_root"], "feed_url": src["feed_url"],
                  "wp_api": src["wp_api"], "image_url": src.get("image_url", ""),
+                 "fetch_mode": "all",
                  "voices": dict(DEFAULT_VOICES),
                  "intro": True, "outro": True, "chime": True, "active": True})
     blog.setdefault("seen_guids", [])
@@ -1502,23 +1562,24 @@ def cmd_update(args):
                 posts = fetch_pdf_folder_items(folder_path)
 
         elif blog.get("wp_api"):
-            # Always prefer the WordPress REST API over RSS when available,
-            # including on ordinary (non-backfill) updates.
+            # Prefer the WordPress REST API over RSS when available. Full-history
+            # sources fetch the archive; new-only sources query after their cutoff.
             #
             # Many WordPress sites configure their feed to show a summary
             # rather than the full text, so content:encoded holds only the
             # first paragraph. The REST API's content.rendered always returns
             # the full text and is therefore the more reliable source.
-            #
-            # This costs no extra synthesis: process_posts() skips already
-            # processed episodes with a cheap filename check, so fetching the
-            # archive only adds a few requests.
             if blog.get("backfill_pending", None) is not False:
-                print("   ⏳ Backfill is incomplete or its status is unknown; "
-                      "fetching the full archive to continue...")
+                if blog.get("fetch_mode") == "new_only":
+                    print("   ⏳ Resuming new-only import after its cutoff...")
+                else:
+                    print("   ⏳ Backfill is incomplete or its status is unknown; "
+                          "fetching the full archive to continue...")
             try:
-                posts = fetch_all_wp_posts(blog["wp_api"])
-                did_full_wp_fetch = True
+                after = (blog.get("added_after")
+                         if blog.get("fetch_mode") == "new_only" else None)
+                posts = fetch_all_wp_posts(blog["wp_api"], after=after)
+                did_full_wp_fetch = after is None
             except Exception as e:
                 print(f"   ⚠️  REST request failed ({e}); "
                       f"trying the RSS feed as a fallback...")
@@ -1537,6 +1598,9 @@ def cmd_update(args):
             except Exception as e:
                 print(f"   ⚠️  RSS request failed ({e}).")
                 posts = []
+
+        if blog.get("fetch_mode") == "new_only":
+            posts = _filter_new_only_posts(blog, posts)
 
         stats = process_posts(blog, posts, force=getattr(args, "force", False),
                               on_progress=_feed_writer(state))
@@ -1576,6 +1640,9 @@ def cmd_list(args):
             print(f"    Folder: {Path(blog['folder'])}")
         else:
             print(f"    Feed: {blog['feed_url']}")
+            fetch_mode = ("new items only" if blog.get("fetch_mode") == "new_only"
+                          else "full history")
+            print(f"    Fetch: {fetch_mode}")
         voices = "  ".join(f"{lang}={v.get(lang, DEFAULT_VOICES[lang])}"
                            for lang in LANGUAGES)
         counts = ", ".join(f"{lang}: {n}" for lang, n in per_lang.items())
@@ -1796,8 +1863,10 @@ def main():
     ap = argparse.ArgumentParser(description="Convert blogs and PDFs into a self-hosted podcast feed.")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("add", help="Add a blog and download all existing posts")
+    p = sub.add_parser("add", help="Add a blog (full history by default)")
     p.add_argument("url")
+    p.add_argument("--new-only", action="store_true",
+                   help="Skip existing posts and process items published after adding")
     p.add_argument("--voice", action="append", metavar="LANG=VOICE", default=[],
                    help="Override the voice for one language, e.g. "
                         "--voice fi=Harri --voice de=de-DE-KatjaNeural "
